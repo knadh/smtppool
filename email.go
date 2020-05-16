@@ -100,7 +100,7 @@ type Email struct {
 	// Sender overrides From as SMTP envelope sender (optional).
 	Sender      string
 	Headers     textproto.MIMEHeader
-	Attachments []*Attachment
+	Attachments []Attachment
 	ReadReceipt []string
 }
 
@@ -392,13 +392,13 @@ func parseMIMEParts(hs textproto.MIMEHeader, b io.Reader) ([]*part, error) {
 // Attach is used to attach content from an io.Reader to the email.
 // Required parameters include an io.Reader, the desired filename for the attachment, and the Content-Type
 // The function will return the created Attachment for reference, as well as nil for the error, if successful.
-func (e *Email) Attach(r io.Reader, filename string, c string) (a *Attachment, err error) {
+func (e *Email) Attach(r io.Reader, filename string, c string) (a Attachment, err error) {
 	var buffer bytes.Buffer
 	if _, err = io.Copy(&buffer, r); err != nil {
 		return
 	}
 
-	at := &Attachment{
+	at := Attachment{
 		Filename: filename,
 		Header:   textproto.MIMEHeader{},
 		Content:  buffer.Bytes(),
@@ -421,7 +421,7 @@ func (e *Email) Attach(r io.Reader, filename string, c string) (a *Attachment, e
 // It attempts to open the file referenced by filename and, if successful, creates an Attachment.
 // This Attachment is then appended to the slice of Email.Attachments.
 // The function will then return the Attachment for reference, as well as nil for the error, if successful.
-func (e *Email) AttachFile(filename string) (a *Attachment, err error) {
+func (e *Email) AttachFile(filename string) (a Attachment, err error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return
