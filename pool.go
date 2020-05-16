@@ -17,31 +17,31 @@ import (
 // Opt represents SMTP pool options.
 type Opt struct {
 	// Host is the SMTP server's hostname.
-	Host string
+	Host string `json:"host"`
 
 	// Port is the SMTP server port.
-	Port int
+	Port int `json:"port"`
 
 	// HelloHostname is the optional hostname to pass with the HELO command.
 	// Default is "localhost".
-	HelloHostname string
+	HelloHostname string `json:"hello_hostname"`
 
 	// MaxConns is the maximum allowed concurrent SMTP connections.
-	MaxConns int
+	MaxConns int `json:"max_conns"`
 
 	// MaxMessageRetries is the number of times a message should be retried
 	// if sending fails. Default is 2. Min is 1.
-	MaxMessageRetries int
+	MaxMessageRetries int `json:"max_msg_retries"`
 
 	// IdleTimeout is the maximum time to wait for new activity on a connection
 	// before closing it and removing it from the pool.
-	IdleTimeout time.Duration
+	IdleTimeout time.Duration `json:"idle_timeout"`
 
 	// PoolWaitTimeout is the maximum time to wait to obtain a connection from
 	// a pool before timing out. This may happen when all open connections are
 	// busy sending e-mails and they're not returning to the pool fast enough.
 	// This is also the timeout used when creating new SMTP connections.
-	PoolWaitTimeout time.Duration
+	PoolWaitTimeout time.Duration `json:"wait_timeout"`
 
 	// Auth is the smtp.Auth authentication scheme.
 	Auth smtp.Auth
