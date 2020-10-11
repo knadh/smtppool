@@ -433,6 +433,34 @@ func (e *Email) AttachFile(filename string) (a Attachment, err error) {
 	return e.Attach(f, basename, ct)
 }
 
+// formatAddress formats the address as a valid RFC 5322 address.
+// If the address's name contains non-ASCII characters
+// the name will be rendered according to RFC 2047.
+func (e *Email) formatAddress(addr string) (string, error) {
+	em, err := mail.ParseAddress(addr)
+	if err != nil {
+		return addr, err
+	}
+
+	return em.String(), nil
+}
+
+// formatAddresses formats the list of address as a valid RFC 5322 addresses.
+// If the address's name contains non-ASCII characters
+// the name will be rendered according to RFC 2047.
+func (e *Email) formatAddresses(addrs []string) ([]string, error) {
+	fAddrs := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		em, err := e.formatAddress(addr)
+		if err != nil {
+			return nil, err
+		}
+		fAddrs = append(fAddrs, em)
+	}
+
+	return fAddrs, nil
+}
+
 // msgHeaders merges the Email's various fields and custom headers together in a
 // standards compliant way to create a MIMEHeader to be used in the resulting
 // message. It does not alter e.Headers.
@@ -451,13 +479,25 @@ func (e *Email) msgHeaders() (textproto.MIMEHeader, error) {
 
 	// Set headers if there are values.
 	if _, ok := res[HdrReplyTo]; !ok && len(e.ReplyTo) > 0 {
-		res.Set(HdrReplyTo, strings.Join(e.ReplyTo, ", "))
+		replyTo, err := e.formatAddresses(e.ReplyTo)
+		if err != nil {
+			return nil, err
+		}
+		res.Set(HdrReplyTo, strings.Join(replyTo, ", "))
 	}
 	if _, ok := res[HdrTo]; !ok && len(e.To) > 0 {
-		res.Set(HdrTo, strings.Join(e.To, ", "))
+		to, err := e.formatAddresses(e.To)
+		if err != nil {
+			return nil, err
+		}
+		res.Set(HdrTo, strings.Join(to, ", "))
 	}
 	if _, ok := res[HdrCC]; !ok && len(e.Cc) > 0 {
-		res.Set(HdrCC, strings.Join(e.Cc, ", "))
+		cc, err := e.formatAddresses(e.Cc)
+		if err != nil {
+			return nil, err
+		}
+		res.Set(HdrCC, strings.Join(cc, ", "))
 	}
 	if _, ok := res[HdrSubject]; !ok && e.Subject != "" {
 		res.Set(HdrSubject, e.Subject)
@@ -471,7 +511,11 @@ func (e *Email) msgHeaders() (textproto.MIMEHeader, error) {
 	}
 	// Date and From are required headers.
 	if _, ok := res[HdrFrom]; !ok {
-		res.Set(HdrFrom, e.From)
+		from, err := e.formatAddress(e.From)
+		if err != nil {
+			return nil, err
+		}
+		res.Set(HdrFrom, from)
 	}
 	if _, ok := res[HdrDate]; !ok {
 		res.Set(HdrDate, time.Now().Format(time.RFC1123Z))

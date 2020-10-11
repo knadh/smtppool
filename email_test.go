@@ -19,7 +19,7 @@ import (
 func prepareEmail() Email {
 	e := Email{}
 	e.From = "Jordan Wright <test@example.com>"
-	e.To = []string{"test@example.com"}
+	e.To = []string{"Bécassine <test@example.com>"}
 	e.Bcc = []string{"test_bcc@example.com"}
 	e.Cc = []string{"test_cc@example.com"}
 	e.Subject = "Awesome Subject"
@@ -37,16 +37,31 @@ func basicTests(t *testing.T, e Email) *mail.Message {
 		t.Fatal("Could not parse rendered message: ", err)
 	}
 
+	toAddr := mail.Address{
+		Name:    "Bécassine",
+		Address: "test@example.com",
+	}
+
+	fromAddr := mail.Address{
+		Name:    "Jordan Wright",
+		Address: "test@example.com",
+	}
+
+	ccAddr := mail.Address{
+		Name:    "",
+		Address: "test_cc@example.com",
+	}
+
 	expectedHeaders := map[string]string{
-		"To":      "test@example.com",
-		"From":    "Jordan Wright <test@example.com>",
-		"Cc":      "test_cc@example.com",
+		"To":      toAddr.String(),
+		"From":    fromAddr.String(),
+		"Cc":      ccAddr.String(),
 		"Subject": "Awesome Subject",
 	}
 
 	for header, expected := range expectedHeaders {
 		if val := msg.Header.Get(header); val != expected {
-			t.Errorf("Wrong value for message header %s: %v != %v", header, expected, val)
+			t.Errorf("Wrong value for message header %s: %v != %v", header, val, expected)
 		}
 	}
 	return msg
