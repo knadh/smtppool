@@ -3,7 +3,7 @@
 smtppool
 ========
 
-smtppool is a Go library that creates a pool of reusable SMTP connections for high throughput e-mailing. It gracefully handles idle connections, timeouts, and retries. The e-mail formatting parsing, and preparation code is forked from [jordan-wright/email](https://github.com/jordan-wright/email).
+smtppool is a Go library that creates a pool of reusable SMTP connections for high throughput e-mailing. It gracefully handles idle connections, timeouts, and retries. The e-mail formatting, parsing, and preparation code is forked from [jordan-wright/email](https://github.com/jordan-wright/email).
 
 
 ### Install
