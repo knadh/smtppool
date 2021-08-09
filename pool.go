@@ -366,7 +366,6 @@ func (c *conn) send(e Email) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	defer w.Close()
 
 	// Get raw message payload.
 	msg, err := e.Bytes()
@@ -374,9 +373,16 @@ func (c *conn) send(e Email) (bool, error) {
 		return false, err
 	}
 
+	// now write message
 	if _, err = w.Write(msg); err != nil {
 		return true, err
 	}
+
+	// close the writer and check if there is a smtp error after closing
+	if err := w.Close(); err != nil {
+		return true, err
+	}
+
 	return false, nil
 }
 
