@@ -366,6 +366,7 @@ func (c *conn) send(e Email) (bool, error) {
 	if err != nil {
 		return true, err
 	}
+	defer w.Close()
 
 	// Get raw message payload.
 	msg, err := e.Bytes()
