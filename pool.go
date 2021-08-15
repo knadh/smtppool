@@ -337,7 +337,7 @@ func (p *Pool) sweepConns(interval time.Duration) {
 func (c *conn) send(e Email) (bool, error) {
 	c.lastActivity = time.Now()
 
-	// Combile e-mail addresses from multiple lists.
+	// Combine e-mail addresses from multiple lists.
 	emails, err := combineEmails(e.To, e.Cc, e.Bcc)
 	if err != nil {
 		return false, err
@@ -366,7 +366,13 @@ func (c *conn) send(e Email) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	defer w.Close()
+
+	isClosed := false
+	defer func() {
+		if !isClosed {
+			w.Close()
+		}
+	}()
 
 	// Get raw message payload.
 	msg, err := e.Bytes()
@@ -377,6 +383,12 @@ func (c *conn) send(e Email) (bool, error) {
 	if _, err = w.Write(msg); err != nil {
 		return true, err
 	}
+
+	if err := w.Close(); err != nil {
+		return true, err
+	}
+	isClosed = true
+
 	return false, nil
 }
 
