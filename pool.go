@@ -43,6 +43,12 @@ type Opt struct {
 	// This is also the timeout used when creating new SMTP connections.
 	PoolWaitTimeout time.Duration `json:"wait_timeout"`
 
+	// Given TLSConfig:
+	// SSL = true; uses an SSL (TLS) connection without the STARTTLS extension.
+	// SSL = false; opens a non-TLS connection and then requests the STARTTLS extension
+	// from the server for encryption.
+	SSL bool `json:"ssl"`
+
 	// Auth is the smtp.Auth authentication scheme.
 	Auth smtp.Auth
 
@@ -153,10 +159,24 @@ func (p *Pool) Close() {
 
 // newConn creates a new SMTP client connection that can be added to the pool.
 func (p *Pool) newConn() (cn *conn, err error) {
-	netCon, err := net.DialTimeout("tcp",
-		fmt.Sprintf("%s:%d", p.opt.Host, p.opt.Port), p.opt.PoolWaitTimeout)
-	if err != nil {
-		return nil, err
+	var (
+		netCon net.Conn
+		addr   = fmt.Sprintf("%s:%d", p.opt.Host, p.opt.Port)
+	)
+	if p.opt.TLSConfig != nil && p.opt.SSL {
+		// TLS connection.
+		c, err := tls.DialWithDialer(&net.Dialer{Timeout: p.opt.PoolWaitTimeout}, "tcp", addr, p.opt.TLSConfig)
+		if err != nil {
+			return nil, err
+		}
+		netCon = c
+	} else {
+		// Non-TLS connection that may be upgraded later using STARTTLS.
+		c, err := net.DialTimeout("tcp", addr, p.opt.PoolWaitTimeout)
+		if err != nil {
+			return nil, err
+		}
+		netCon = c
 	}
 
 	// Connect to the SMTP server
@@ -178,8 +198,8 @@ func (p *Pool) newConn() (cn *conn, err error) {
 		sm.Hello(p.opt.HelloHostname)
 	}
 
-	// Optional TLS.
-	if p.opt.TLSConfig != nil {
+	// STARTTLS.
+	if p.opt.TLSConfig != nil && !p.opt.SSL {
 		if ok, _ := sm.Extension("STARTTLS"); !ok {
 			return nil, errors.New("SMTP STARTTLS extension not found")
 		}
