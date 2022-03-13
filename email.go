@@ -54,7 +54,7 @@ const (
 	HdrMimeVersion = "MIME-Version"
 
 	HdrContentTransferEncoding = "Content-Transfer-Encoding"
-	HdrContentDisposition      = "ContentDisposition"
+	HdrContentDisposition      = "Content-Disposition"
 	HdrContentID               = "Content-ID"
 )
 
