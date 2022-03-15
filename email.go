@@ -222,6 +222,18 @@ func NewEmailFromReader(r io.Reader) (Email, error) {
 			e.Text = p.body
 		case ct == ContentTypeHTML:
 			e.HTML = p.body
+		default:
+			// Get filename for the attachment from the content disposition header.
+			_, params, err := mime.ParseMediaType(p.header.Get(HdrContentDisposition))
+			if err != nil {
+				continue
+			}
+			attachment := Attachment{
+				Filename: params["filename"],
+				Content:  p.body,
+				Header:   p.header,
+			}
+			e.Attachments = append(e.Attachments, attachment)
 		}
 	}
 	return e, nil
