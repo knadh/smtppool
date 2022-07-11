@@ -110,7 +110,7 @@ func New(o Opt) (*Pool, error) {
 	}
 
 	// Start the idle connection sweeper.
-	if o.IdleTimeout.Seconds() >= 1 {
+	if o.IdleTimeout.Seconds() >= 1 && o.MaxConns > 1 {
 		go p.sweepConns(time.Second * 2)
 	}
 	return p, nil
