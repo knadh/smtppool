@@ -363,14 +363,14 @@ func (c *conn) send(e Email) (bool, error) {
 		return false, err
 	}
 
-	// Extract the e-mail from the address.
-	from, err := mail.ParseAddress(e.From)
+	// Extract SMTP envelope sender from the email struct.
+	from, err := e.parseSender()
 	if err != nil {
 		return false, err
 	}
 
 	// Send the Mail command.
-	if err = c.conn.Mail(from.Address); err != nil {
+	if err = c.conn.Mail(from); err != nil {
 		return true, err
 	}
 
