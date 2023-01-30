@@ -360,31 +360,31 @@ func (c *conn) send(e Email) (bool, error) {
 	// Combine e-mail addresses from multiple lists.
 	emails, err := combineEmails(e.To, e.Cc, e.Bcc)
 	if err != nil {
-		return false, err
+		return true, err
 	}
 
 	// Extract SMTP envelope sender from the email struct.
 	from, err := e.parseSender()
 	if err != nil {
-		return false, err
+		return true, err
 	}
 
 	// Send the Mail command.
 	if err = c.conn.Mail(from); err != nil {
-		return true, err
+		return false, err
 	}
 
 	// Send RCPT for all receipients.
 	for _, recip := range emails {
 		if err = c.conn.Rcpt(recip); err != nil {
-			return true, err
+			return false, err
 		}
 	}
 
 	// Write the message.
 	w, err := c.conn.Data()
 	if err != nil {
-		return true, err
+		return false, err
 	}
 
 	isClosed := false
@@ -401,11 +401,11 @@ func (c *conn) send(e Email) (bool, error) {
 	}
 
 	if _, err = w.Write(msg); err != nil {
-		return true, err
+		return false, err
 	}
 
 	if err := w.Close(); err != nil {
-		return true, err
+		return false, err
 	}
 	isClosed = true
 
