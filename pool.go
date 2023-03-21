@@ -273,6 +273,10 @@ func (p *Pool) returnConn(c *conn, lastErr error) (err error) {
 		}
 	}
 
+	if err := c.conn.Reset(); err != nil {
+		return err
+	}
+
 	select {
 	case p.conns <- c:
 		return nil
