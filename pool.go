@@ -236,7 +236,13 @@ func (p *Pool) borrowConn() (*conn, error) {
 	case p.createdConns <= p.opt.MaxConns && len(p.conns) == 0:
 		p.createdConns++
 		p.mut.Unlock()
-		return p.newConn()
+		c, err := p.newConn()
+		if err != nil {
+			p.mut.Lock()
+			p.createdConns--
+			p.mut.Unlock()
+		}
+		return c, err
 	default:
 		p.mut.Unlock()
 	}
