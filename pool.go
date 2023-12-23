@@ -10,7 +10,7 @@ import (
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -60,16 +60,14 @@ type Opt struct {
 type Pool struct {
 	opt          Opt
 	conns        chan *conn
-	createdConns int
-	lastActivity time.Time
-	mut          sync.Mutex
+	createdConns atomic.Int32
 
 	// stopBorrow signals all waiting borrowCon() calls on the pool to
 	// immediately return an ErrPoolClosed.
 	stopBorrow chan bool
 
 	// closed marks the pool as closed.
-	closed bool
+	closed atomic.Bool
 }
 
 // conn represents an AMTP client connection in the pool.
@@ -146,9 +144,7 @@ func (p *Pool) Send(e Email) error {
 
 // Close closes the pool.
 func (p *Pool) Close() {
-	p.mut.Lock()
-	p.closed = true
-	p.mut.Unlock()
+	p.closed.Store(true)
 	close(p.stopBorrow)
 
 	// If the sweeper isn't already running, run it.
@@ -228,17 +224,12 @@ func (p *Pool) borrowConn() (*conn, error) {
 	// If there are no connections in the pool and if there is room for new
 	// connections, create a new connection. Locks are used ad-hoc to avoid
 	// locking when IO bound newConn() is happening.
-	p.mut.Lock()
 	switch {
-	case p.closed:
-		p.mut.Unlock()
+	case p.closed.Load():
 		return nil, ErrPoolClosed
-	case p.createdConns <= p.opt.MaxConns && len(p.conns) == 0:
-		p.createdConns++
-		p.mut.Unlock()
+	case int(p.createdConns.Load()) <= p.opt.MaxConns && len(p.conns) == 0:
+		p.createdConns.Add(1)
 		return p.newConn()
-	default:
-		p.mut.Unlock()
 	}
 
 	select {
@@ -258,9 +249,7 @@ func (p *Pool) returnConn(c *conn, lastErr error) (err error) {
 	// and should be closed and not added back to the pool.
 	defer func() {
 		if err != nil {
-			p.mut.Lock()
-			p.createdConns--
-			p.mut.Unlock()
+			p.createdConns.Add(-1)
 			c.conn.Close()
 		}
 	}()
@@ -294,14 +283,11 @@ func (p *Pool) sweepConns(interval time.Duration) {
 
 		// The number of conns in the channel are the ones that are potentially
 		// idling. Iterate through them and examine their activity timestamp.
-		p.mut.Lock()
 		var (
 			num          = len(p.conns)
-			createdConns = p.createdConns
-			closed       = p.closed
+			createdConns = p.createdConns.Load()
+			closed       = p.closed.Load()
 		)
-		p.mut.Unlock()
-
 		if closed && createdConns == 0 {
 			// If the pool is closed and there are no more connections, exit
 			// the sweeper.
@@ -321,9 +307,7 @@ func (p *Pool) sweepConns(interval time.Duration) {
 			if closed || time.Since(c.lastActivity) > p.opt.IdleTimeout {
 				// If the pool is closed or the the connection is idling,
 				// close the conn.
-				p.mut.Lock()
-				p.createdConns--
-				p.mut.Unlock()
+				p.createdConns.Add(-1)
 
 				// Unlock mutex before blockong on IO.
 				if closed {
@@ -344,9 +328,7 @@ func (p *Pool) sweepConns(interval time.Duration) {
 			case p.conns <- c:
 			default:
 				_ = c.conn.Close()
-				p.mut.Lock()
-				p.createdConns--
-				p.mut.Unlock()
+				p.createdConns.Add(-1)
 			}
 		}
 	}
