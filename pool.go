@@ -262,6 +262,12 @@ func (p *Pool) returnConn(c *conn, lastErr error) (err error) {
 		}
 	}
 
+	// Always RSET (SMTP) the connection bfeore reusing it as some servers
+	// throw "sender already specified", or "commands out of sequence" errors.
+	if err := c.conn.Reset(); err != nil {
+		return err
+	}
+
 	select {
 	case p.conns <- c:
 		return nil
