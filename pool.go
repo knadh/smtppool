@@ -221,23 +221,35 @@ func (p *Pool) newConn() (cn *conn, err error) {
 
 // borrowConn borrows a connection from the pool.
 func (p *Pool) borrowConn() (*conn, error) {
-	// If there are no connections in the pool and if there is room for new
-	// connections, create a new connection. Locks are used ad-hoc to avoid
-	// locking when IO bound newConn() is happening.
+	// Check pool status and connection counts first.
 	switch {
 	case p.closed.Load():
+		// If the pool is closed, return an error immediately.
 		return nil, ErrPoolClosed
-	case int(p.createdConns.Load()) <= p.opt.MaxConns && len(p.conns) == 0:
+	case int(p.createdConns.Load()) < p.opt.MaxConns && len(p.conns) == 0:
+		// If there are no connections in the pool and if there is room for new
+		// connections, create a new connection. Locks are used ad-hoc to avoid
+		// locking when IO bound newConn() is happening.
 		p.createdConns.Add(1)
-		return p.newConn()
+		cn, err := p.newConn()
+		if err != nil {
+			// Decrement counter on failed connection creation.
+			p.createdConns.Add(-1)
+			return nil, err
+		}
+		return cn, nil
 	}
 
+	// Try to get a connection from the pool or handle timeouts and pool closure.
 	select {
 	case c := <-p.conns:
+		// Return the connection if one is available.
 		return c, nil
 	case <-p.stopBorrow:
+		// Return error if the pool is closing down.
 		return nil, ErrPoolClosed
 	case <-time.After(p.opt.PoolWaitTimeout):
+		// Return timeout error if no connection becomes available.
 		return nil, errors.New("timed out waiting for free conn in pool")
 	}
 }
