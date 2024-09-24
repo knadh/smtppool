@@ -116,30 +116,30 @@ func New(o Opt) (*Pool, error) {
 
 // Send sends an e-mail using an available connection in the pool.
 // On error, the message is retried on a new connection.
-func (p *Pool) Send(e Email) error {
+func (p *Pool) Send(e Email) (string, error) {
 	// Get a connection from the pool.
 	var lastErr error
 	for i := 0; i < p.opt.MaxMessageRetries; i++ {
 		c, err := p.borrowConn()
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		// Send the message.
-		canRetry, err := c.send(e)
+		canRetry, err, msg := c.send(e)
 		if err == nil {
 			_ = p.returnConn(c, nil)
-			return nil
+			return msg, err
 		}
 		lastErr = err
 
 		// Not a retriable error.
 		_ = p.returnConn(c, err)
 		if !canRetry {
-			return err
+			return "", err
 		}
 	}
-	return lastErr
+	return "", lastErr
 }
 
 // Close closes the pool.
@@ -354,37 +354,37 @@ func (p *Pool) sweepConns(interval time.Duration) {
 
 // send sends a message using the connection. The bool in the return indicates
 // if the message can be retried in case of an SMTP related error.
-func (c *conn) send(e Email) (bool, error) {
+func (c *conn) send(e Email) (bool, error, string) {
 	c.lastActivity = time.Now()
 
 	// Combine e-mail addresses from multiple lists.
 	emails, err := combineEmails(e.To, e.Cc, e.Bcc)
 	if err != nil {
-		return true, err
+		return true, err, ""
 	}
 
 	// Extract SMTP envelope sender from the email struct.
 	from, err := e.parseSender()
 	if err != nil {
-		return true, err
+		return true, err, ""
 	}
 
 	// Send the Mail command.
 	if err = c.conn.Mail(from); err != nil {
-		return false, err
+		return false, err, ""
 	}
 
 	// Send RCPT for all receipients.
 	for _, recip := range emails {
 		if err = c.conn.Rcpt(recip); err != nil {
-			return false, err
+			return false, err, ""
 		}
 	}
 
 	// Write the message.
 	w, err := c.conn.Data()
 	if err != nil {
-		return false, err
+		return false, err, ""
 	}
 
 	isClosed := false
@@ -397,19 +397,22 @@ func (c *conn) send(e Email) (bool, error) {
 	// Get raw message payload.
 	msg, err := e.Bytes()
 	if err != nil {
-		return false, err
+		return false, err, ""
 	}
 
 	if _, err = w.Write(msg); err != nil {
-		return false, err
+		return false, err, ""
 	}
 
 	if err := w.Close(); err != nil {
-		return false, err
+		return false, err, ""
 	}
 	isClosed = true
 
-	return false, nil
+	// Read and print the response after DATA command.
+	_, message, _ := c.conn.Text.ReadResponse(250)
+
+	return false, nil, message
 }
 
 // Start starts the SMTP LOGIN auth type.
