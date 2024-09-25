@@ -122,7 +122,7 @@ func (p *Pool) Send(e Email) (string, error) {
 	for i := 0; i < p.opt.MaxMessageRetries; i++ {
 		c, err := p.borrowConn()
 		if err != nil {
-			return "", err
+			return "failed to borrow connection from pool", err
 		}
 
 		// Send the message.
@@ -136,10 +136,10 @@ func (p *Pool) Send(e Email) (string, error) {
 		// Not a retriable error.
 		_ = p.returnConn(c, err)
 		if !canRetry {
-			return "", err
+			return "permanent smtp error", err
 		}
 	}
-	return "", lastErr
+	return "failed after retry", lastErr
 }
 
 // Close closes the pool.
