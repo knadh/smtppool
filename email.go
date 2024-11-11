@@ -690,8 +690,8 @@ func generateMessageID() (string, error) {
 	}
 	h, err := os.Hostname()
 
-	// If there is no hostname, use the default hostname.
-	if err != nil {
+	// If there is no hostname or hostname is not an fqdn, use the default hostname.
+	if err != nil || !strings.Contains(h, ".") {
 		h = defaultHostname
 	}
 
