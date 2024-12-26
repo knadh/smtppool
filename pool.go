@@ -159,7 +159,7 @@ func (p *Pool) newConn() (cn *conn, err error) {
 		netCon net.Conn
 		addr   = fmt.Sprintf("%s:%d", p.opt.Host, p.opt.Port)
 	)
-	if p.opt.TLSConfig != nil && p.opt.SSL {
+	if p.opt.SSL {
 		// TLS connection.
 		c, err := tls.DialWithDialer(&net.Dialer{Timeout: p.opt.PoolWaitTimeout}, "tcp", addr, p.opt.TLSConfig)
 		if err != nil {
@@ -195,7 +195,7 @@ func (p *Pool) newConn() (cn *conn, err error) {
 	}
 
 	// STARTTLS.
-	if p.opt.TLSConfig != nil && !p.opt.SSL {
+	if !p.opt.SSL {
 		if ok, _ := sm.Extension("STARTTLS"); !ok {
 			return nil, errors.New("SMTP STARTTLS extension not found")
 		}
