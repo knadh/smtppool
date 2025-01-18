@@ -35,7 +35,7 @@ func main() {
 		log.Fatalf("error creating pool: %v", err)
 	}
 
-	e:= Email{
+	e:= smtppool.Email{
 		From:    "John Doe <john@example.com>",
 		To:      []string{"doe@example.com"},
 
