@@ -15,8 +15,8 @@ smtppool is a Go library that creates a pool of reusable SMTP connections for hi
 package main
 
 import (
-	"fmt"
 	"log"
+	"time"
 
 	"github.com/knadh/smtppool"
 )
@@ -35,7 +35,7 @@ func main() {
 		log.Fatalf("error creating pool: %v", err)
 	}
 
-	e:= Email{
+	e:= smtppool.Email{
 		From:    "John Doe <john@example.com>",
 		To:      []string{"doe@example.com"},
 
