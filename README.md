@@ -53,6 +53,11 @@ func main() {
 		log.Fatalf("error attaching file: %v", err)
 	}
 
+	// Add attachments from bytes.
+	// if _, err := e.AttachBytes("data.json", []byte("{'key':'value'}\n")); err != nil {
+	// 	log.Fatalf("error attaching file: %v", err)
+	// }
+
 	if err := pool.Send(e); err != nil {
 		log.Fatalf("error sending e-mail: %v", err)
 	}

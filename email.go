@@ -488,6 +488,24 @@ func (e *Email) AttachFile(filename string) (a Attachment, err error) {
 	return e.Attach(f, basename, ct)
 }
 
+// AttachBytes is used to attach content to the email.
+// If a byte array (file data) is provided, it will attach that , with the filename provided.
+// This Attachment is then appended to the slice of Email.Attachments.
+// The function will then return the Attachment for reference, as well as nil for the error, if successful.
+func (e *Email) AttachBytes(filename string, fileData []byte) (a Attachment, err error) {
+	var r io.Reader
+	if fileData == nil {
+		return
+	}
+
+	r = bytes.NewReader(fileData)
+
+	ct := mime.TypeByExtension(filepath.Ext(filename))
+	basename := filepath.Base(filename)
+
+	return e.Attach(r, basename, ct)
+}
+
 // formatAddress formats the address as a valid RFC 5322 address.
 // If the address's name contains non-ASCII characters
 // the name will be rendered according to RFC 2047.
