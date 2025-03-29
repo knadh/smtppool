@@ -18,7 +18,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/knadh/smtppool"
+	"github.com/knadh/smtppool/v2"
 )
 
 func main() {

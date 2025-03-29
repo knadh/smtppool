@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -99,8 +100,12 @@ type LoginAuth struct {
 	Password string
 }
 
-// ErrPoolClosed is thrown when a closed Pool is used.
-var ErrPoolClosed = errors.New("pool closed")
+var (
+	// ErrPoolClosed is thrown when a closed Pool is used.
+	ErrPoolClosed = errors.New("pool closed")
+
+	netErr net.Error
+)
 
 // New initializes and returns a new SMTP Pool.
 func New(o Opt) (*Pool, error) {
@@ -108,7 +113,7 @@ func New(o Opt) (*Pool, error) {
 		return nil, errors.New("MaxConns should be >= 1")
 	}
 	if o.MaxMessageRetries == 0 {
-		o.MaxMessageRetries = 2
+		o.MaxMessageRetries = 1
 	}
 	if o.PoolWaitTimeout.Seconds() < 1 {
 		o.PoolWaitTimeout = time.Second * 2
@@ -130,16 +135,20 @@ func New(o Opt) (*Pool, error) {
 // Send sends an e-mail using an available connection in the pool.
 // On error, the message is retried on a new connection.
 func (p *Pool) Send(e Email) error {
-	// Get a connection from the pool.
 	var lastErr error
-	for i := 0; i < p.opt.MaxMessageRetries; i++ {
+	for range p.opt.MaxMessageRetries {
+		// Get a connection from the pool.
 		c, err := p.borrowConn()
 		if err != nil {
+			if canRetry(err) {
+				continue
+			}
+
 			return err
 		}
 
 		// Send the message.
-		canRetry, err := c.send(e)
+		retry, err := c.send(e)
 		if err == nil {
 			_ = p.returnConn(c, nil)
 			return nil
@@ -148,10 +157,12 @@ func (p *Pool) Send(e Email) error {
 
 		// Not a retriable error.
 		_ = p.returnConn(c, err)
-		if !canRetry {
+		if !retry {
 			return err
 		}
+
 	}
+
 	return lastErr
 }
 
@@ -388,20 +399,20 @@ func (c *conn) send(e Email) (bool, error) {
 
 	// Send the Mail command.
 	if err = c.conn.Mail(from); err != nil {
-		return false, err
+		return canRetry(err), err
 	}
 
 	// Send RCPT for all receipients.
 	for _, recip := range emails {
 		if err = c.conn.Rcpt(recip); err != nil {
-			return false, err
+			return canRetry(err), err
 		}
 	}
 
 	// Write the message.
 	w, err := c.conn.Data()
 	if err != nil {
-		return false, err
+		return canRetry(err), err
 	}
 
 	isClosed := false
@@ -418,7 +429,7 @@ func (c *conn) send(e Email) (bool, error) {
 	}
 
 	if _, err = w.Write(msg); err != nil {
-		return false, err
+		return canRetry(err), err
 	}
 
 	if err := w.Close(); err != nil {
@@ -471,4 +482,19 @@ func combineEmails(lists ...[]string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// canRetry returns true if the given SMTP err is network
+// related and hence, can be retried.
+// eg: TCP/DNS/timeout/broken pipe etc.
+func canRetry(err error) bool {
+	if errors.As(err, &netErr) {
+		return true
+	} else if _, ok := err.(*net.OpError); ok {
+		return true
+	} else if err == io.EOF {
+		return true
+	}
+
+	return false
 }
