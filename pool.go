@@ -14,6 +14,20 @@ import (
 	"time"
 )
 
+// SSLType is the type of SSL connection to use.
+type SSLType uint8
+
+const (
+	// SSLNone specifies a plain unencrypted connection.
+	SSLNone SSLType = iota
+
+	// SSLTLS specifies an SSL (TLS) connection without the STARTTLS extension.
+	SSLTLS
+
+	// SSLSTARTTLS specifies a non-TLS connection that then upgrades to STARTTLS.
+	SSLSTARTTLS
+)
+
 // Opt represents SMTP pool options.
 type Opt struct {
 	// Host is the SMTP server's hostname.
@@ -44,10 +58,10 @@ type Opt struct {
 	PoolWaitTimeout time.Duration `json:"wait_timeout"`
 
 	// Given TLSConfig:
-	// SSL = true; uses an SSL (TLS) connection without the STARTTLS extension.
-	// SSL = false; opens a non-TLS connection and then requests the STARTTLS extension
-	// from the server for encryption.
-	SSL bool `json:"ssl"`
+	// SSLNone (default); open a plain unencrypted connection.
+	// SSLTLS; use an SSL (TLS) connection without the STARTTLS extension.
+	// SSLSTARTTLS; open a non-TLS connection and then requests the STARTTLS extension.
+	SSL SSLType `json:"ssl"`
 
 	// Auth is the smtp.Auth authentication scheme.
 	Auth smtp.Auth
@@ -72,8 +86,7 @@ type Pool struct {
 
 // conn represents an AMTP client connection in the pool.
 type conn struct {
-	conn   *smtp.Client
-	numErr int
+	conn *smtp.Client
 
 	// lastActivity records the time when the last message on this client
 	// was sent. Used for sweeping and disconnecting idle connections.
@@ -159,14 +172,18 @@ func (p *Pool) newConn() (cn *conn, err error) {
 		netCon net.Conn
 		addr   = fmt.Sprintf("%s:%d", p.opt.Host, p.opt.Port)
 	)
-	if p.opt.SSL {
+
+	switch p.opt.SSL {
+	case SSLTLS:
 		// TLS connection.
 		c, err := tls.DialWithDialer(&net.Dialer{Timeout: p.opt.PoolWaitTimeout}, "tcp", addr, p.opt.TLSConfig)
 		if err != nil {
 			return nil, err
 		}
 		netCon = c
-	} else {
+
+	default:
+		// SSLSTARTTLS, SSLNone
 		// Non-TLS connection that may be upgraded later using STARTTLS.
 		c, err := net.DialTimeout("tcp", addr, p.opt.PoolWaitTimeout)
 		if err != nil {
@@ -194,8 +211,8 @@ func (p *Pool) newConn() (cn *conn, err error) {
 		sm.Hello(p.opt.HelloHostname)
 	}
 
-	// STARTTLS.
-	if !p.opt.SSL {
+	// Attempt to upgrade to STARTTLS.
+	if p.opt.SSL == SSLSTARTTLS {
 		if ok, _ := sm.Extension("STARTTLS"); !ok {
 			return nil, errors.New("SMTP STARTTLS extension not found")
 		}
