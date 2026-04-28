@@ -48,8 +48,8 @@ type Opt struct {
 	// if sending fails. Default is 2. Min is 1.
 	MaxMessageRetries int `json:"max_msg_retries"`
 
-	// MessageRetryDelay (optional) is the duration to wait before retrying a failed message.
-	MessageRetryDelay time.Duration `json:"message_retry_delay"`
+	// MsgRetryDelay (optional) is the duration to wait before retrying a failed message.
+	MsgRetryDelay time.Duration `json:"msg_retry_delay"`
 
 	// IdleTimeout is the maximum time to wait for new activity on a connection
 	// before closing it and removing it from the pool.
@@ -140,8 +140,8 @@ func New(o Opt) (*Pool, error) {
 func (p *Pool) Send(e Email) error {
 	var lastErr error
 	for i := range p.opt.MaxMessageRetries {
-		if i > 0 && p.opt.MessageRetryDelay > 0 {
-			time.Sleep(p.opt.MessageRetryDelay)
+		if i > 0 && p.opt.MsgRetryDelay > 0 {
+			time.Sleep(p.opt.MsgRetryDelay)
 		}
 
 		// Get a connection from the pool.
