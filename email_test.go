@@ -221,6 +221,161 @@ func TestEmailWithHTMLInlineOnly(t *testing.T) {
 	}
 }
 
+func TestEmailTextAndHTML(t *testing.T) {
+	e := prepareEmail()
+	e.Text = []byte("plain")
+	e.HTML = []byte("<p>html</p>")
+
+	b, err := e.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := trimReader{rd: bytes.NewBuffer(b)}
+	tp := textproto.NewReader(bufio.NewReader(s))
+	hdrs, err := tp.ReadMIMEHeader()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mt, _, err := mime.ParseMediaType(hdrs.Get(HdrContentType))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt != ContentTypeMultipartAlt {
+		t.Fatalf("Content-Type expected %q, got %q", ContentTypeMultipartAlt, mt)
+	}
+
+	ps, err := parseMIMEParts(hdrs, tp.R)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ps) != 2 {
+		t.Fatalf("Expected 2 parts, got %d", len(ps))
+	}
+	if !strings.Contains(ps[0].header.Get("Content-Type"), "text/plain") {
+		t.Error("First part is not text/plain")
+	}
+	if !strings.Contains(ps[1].header.Get("Content-Type"), "text/html") {
+		t.Error("Second part is not text/html")
+	}
+}
+
+func TestEmailTextHTMLInline(t *testing.T) {
+	e := prepareEmail()
+	e.Text = []byte("plain")
+	e.HTML = []byte("<p>html</p>")
+
+	if _, err := e.Attach(bytes.NewBufferString("png"), "inline.png", "image/png"); err != nil {
+		t.Fatal(err)
+	}
+	e.Attachments[len(e.Attachments)-1].HTMLRelated = true
+
+	b, err := e.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := trimReader{rd: bytes.NewBuffer(b)}
+	tp := textproto.NewReader(bufio.NewReader(s))
+	hdrs, err := tp.ReadMIMEHeader()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mt, _, err := mime.ParseMediaType(hdrs.Get(HdrContentType))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt != ContentTypeMultipartAlt {
+		t.Fatalf("Content-Type expected %q, got %q", ContentTypeMultipartAlt, mt)
+	}
+
+	ps, err := parseMIMEParts(hdrs, tp.R)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plain, html, image := false, false, false
+	for _, p := range ps {
+		ct := p.header.Get("Content-Type")
+		switch {
+		case strings.Contains(ct, "text/plain"):
+			plain = true
+		case strings.Contains(ct, "text/html"):
+			html = true
+		case strings.Contains(ct, "image/png"):
+			image = true
+		}
+	}
+	if !plain || !html || !image {
+		t.Fatalf("Missing parts: plain=%v html=%v image=%v", plain, html, image)
+	}
+
+	if !strings.Contains(string(b), ContentTypeMultipartRelated) {
+		t.Error("Expected multipart/related sub-container in body")
+	}
+}
+
+func TestEmailHTMLMixedInline(t *testing.T) {
+	e := prepareEmail()
+	e.HTML = []byte("<p>html</p>")
+
+	if _, err := e.Attach(bytes.NewBufferString("png"), "inline.png", "image/png"); err != nil {
+		t.Fatal(err)
+	}
+	e.Attachments[len(e.Attachments)-1].HTMLRelated = true
+
+	if _, err := e.Attach(bytes.NewBufferString("doc"), "doc.txt", "text/plain"); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := e.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := trimReader{rd: bytes.NewBuffer(b)}
+	tp := textproto.NewReader(bufio.NewReader(s))
+	hdrs, err := tp.ReadMIMEHeader()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mt, _, err := mime.ParseMediaType(hdrs.Get(HdrContentType))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt != ContentTypeMultipartMixed {
+		t.Fatalf("Content-Type expected %q, got %q", ContentTypeMultipartMixed, mt)
+	}
+
+	if !strings.Contains(string(b), ContentTypeMultipartRelated) {
+		t.Error("Expected multipart/related sub-container in body")
+	}
+
+	ps, err := parseMIMEParts(hdrs, tp.R)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, inline, doc := false, false, false
+	for _, p := range ps {
+		ct := p.header.Get("Content-Type")
+		filename := p.header.Get(HdrContentDisposition)
+		switch {
+		case strings.Contains(ct, "text/html"):
+			html = true
+		case strings.Contains(ct, "image/png"):
+			inline = true
+		case strings.Contains(filename, "doc.txt"):
+			doc = true
+		}
+	}
+	if !html || !inline || !doc {
+		t.Fatalf("Missing parts: html=%v inline=%v doc=%v", html, inline, doc)
+	}
+}
+
 func TestEmailHTML(t *testing.T) {
 	e := prepareEmail()
 	e.HTML = []byte("<h1>Fancy Html is supported, too!</h1>\n")
