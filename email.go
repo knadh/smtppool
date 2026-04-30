@@ -269,10 +269,11 @@ func (e *Email) Bytes() ([]byte, error) {
 	var (
 		isMixed       = len(otherAttachments) > 0
 		isAlternative = len(e.Text) > 0 && len(e.HTML) > 0
+		isRelated     = len(e.HTML) > 0 && len(htmlAttachments) > 0 && !isMixed && !isAlternative
 	)
 
 	var w *multipart.Writer
-	if isMixed || isAlternative {
+	if isMixed || isAlternative || isRelated {
 		w = multipart.NewWriter(buff)
 	}
 	switch {
@@ -280,6 +281,8 @@ func (e *Email) Bytes() ([]byte, error) {
 		headers.Set(HdrContentType, ContentTypeMultipartMixed+";\r\n boundary="+w.Boundary())
 	case isAlternative:
 		headers.Set(HdrContentType, ContentTypeMultipartAlt+";\r\n boundary="+w.Boundary())
+	case isRelated:
+		headers.Set(HdrContentType, ContentTypeMultipartRelated+";\r\n boundary="+w.Boundary())
 	case len(e.HTML) > 0:
 		headers.Set(HdrContentType, ContentTypeHTML+"; charset="+defaultCharEncoding)
 		headers.Set(HdrContentTransferEncoding, contentEncQuotedPrintable)
@@ -312,7 +315,7 @@ func (e *Email) Bytes() ([]byte, error) {
 		// Create the body sections.
 		if len(e.Text) > 0 {
 			// Write the text.
-			if err := writeMessage(buff, e.Text, isMixed || isAlternative, ContentTypePlain, subWriter); err != nil {
+			if err := writeMessage(buff, e.Text, isMixed || isAlternative || isRelated, ContentTypePlain, subWriter); err != nil {
 				return nil, err
 			}
 		}
@@ -320,18 +323,24 @@ func (e *Email) Bytes() ([]byte, error) {
 			messageWriter := subWriter
 			var relatedWriter *multipart.Writer
 			if len(htmlAttachments) > 0 {
-				relatedWriter = multipart.NewWriter(buff)
-				header := textproto.MIMEHeader{
-					HdrContentType: {ContentTypeMultipartRelated + ";\r\n boundary=" + relatedWriter.Boundary()},
-				}
-				if _, err := subWriter.CreatePart(header); err != nil {
-					return nil, err
-				}
+				if isRelated {
+					// Reuse as it's already multipart/related.
+					relatedWriter = w
+					messageWriter = w
+				} else {
+					relatedWriter = multipart.NewWriter(buff)
+					header := textproto.MIMEHeader{
+						HdrContentType: {ContentTypeMultipartRelated + ";\r\n boundary=" + relatedWriter.Boundary()},
+					}
+					if _, err := subWriter.CreatePart(header); err != nil {
+						return nil, err
+					}
 
-				messageWriter = relatedWriter
+					messageWriter = relatedWriter
+				}
 			}
 			// Write the HTML.
-			if err := writeMessage(buff, e.HTML, isMixed || isAlternative, ContentTypeHTML, messageWriter); err != nil {
+			if err := writeMessage(buff, e.HTML, isMixed || isAlternative || isRelated, ContentTypeHTML, messageWriter); err != nil {
 				return nil, err
 			}
 			if len(htmlAttachments) > 0 {
@@ -344,7 +353,9 @@ func (e *Email) Bytes() ([]byte, error) {
 					base64Wrap(ap, a.Content)
 				}
 
-				relatedWriter.Close()
+				if !isRelated {
+					relatedWriter.Close()
+				}
 			}
 		}
 		if isMixed && isAlternative {
@@ -364,7 +375,7 @@ func (e *Email) Bytes() ([]byte, error) {
 		base64Wrap(ap, a.Content)
 	}
 
-	if isMixed || isAlternative {
+	if isMixed || isAlternative || isRelated {
 		if err := w.Close(); err != nil {
 			return nil, err
 		}

@@ -153,6 +153,74 @@ func TestEmailWithHTMLAttachments(t *testing.T) {
 	}
 }
 
+func TestEmailWithHTMLInlineOnly(t *testing.T) {
+	e := prepareEmail()
+
+	// HTML body with an inline image, no plain text and no other attachments.
+	e.HTML = []byte("<html><body>This is a text.</body></html>")
+
+	if _, err := e.Attach(bytes.NewBufferString("fake png bytes"), "inline.png", "image/png"); err != nil {
+		t.Fatal("Could not add an attachment to the message: ", err)
+	}
+	e.Attachments[len(e.Attachments)-1].HTMLRelated = true
+
+	b, err := e.Bytes()
+	if err != nil {
+		t.Fatal("Could not serialize e-mail:", err)
+	}
+
+	s := trimReader{rd: bytes.NewBuffer(b)}
+	tp := textproto.NewReader(bufio.NewReader(s))
+	hdrs, err := tp.ReadMIMEHeader()
+	if err != nil {
+		t.Fatal("Could not parse the headers:", err)
+	}
+
+	// Content-Type must be `multipart/related`.
+	mt, _, err := mime.ParseMediaType(hdrs.Get(HdrContentType))
+	if err != nil {
+		t.Fatal("Content-type header is invalid:", hdrs.Get(HdrContentType))
+	}
+	if mt != ContentTypeMultipartRelated {
+		t.Fatalf("Content-Type expected %q, got %q", ContentTypeMultipartRelated, mt)
+	}
+
+	ps, err := parseMIMEParts(hdrs, tp.R)
+	if err != nil {
+		t.Fatal("Error parsing parse MIME parts:", err)
+	}
+
+	if expected, actual := 2, len(ps); actual != expected {
+		t.Errorf("Invalid number of parts. Expected: %d Got: %d", expected, actual)
+	}
+
+	plainTextFound := false
+	htmlFound := false
+	imageFound := false
+	for _, part := range ps {
+		ct := part.header.Get("Content-Type")
+		if strings.Contains(ct, "image/png") {
+			imageFound = true
+		}
+		if strings.Contains(ct, "text/html") {
+			htmlFound = true
+		}
+		if strings.Contains(ct, "text/plain") {
+			plainTextFound = true
+		}
+	}
+
+	if !htmlFound {
+		t.Error("No HTML part.")
+	}
+	if !imageFound {
+		t.Error("No inline image part.")
+	}
+	if plainTextFound {
+		t.Error("Unexpected text/plain part for HTML+inline-only message.")
+	}
+}
+
 func TestEmailHTML(t *testing.T) {
 	e := prepareEmail()
 	e.HTML = []byte("<h1>Fancy Html is supported, too!</h1>\n")
