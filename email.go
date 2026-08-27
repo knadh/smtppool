@@ -269,10 +269,15 @@ func (e *Email) Bytes() ([]byte, error) {
 	var (
 		isMixed       = len(otherAttachments) > 0
 		isAlternative = len(e.Text) > 0 && len(e.HTML) > 0
+		// Inline attachments require a related container even when HTML is
+		// the only message body.
+		isRelated = len(htmlAttachments) > 0
 	)
 
+	// w owns the top-level MIME container. Related content becomes the root
+	// only when the message does not need a mixed or alternative parent.
 	var w *multipart.Writer
-	if isMixed || isAlternative {
+	if isMixed || isAlternative || isRelated {
 		w = multipart.NewWriter(buff)
 	}
 	switch {
@@ -280,6 +285,8 @@ func (e *Email) Bytes() ([]byte, error) {
 		headers.Set(HdrContentType, ContentTypeMultipartMixed+";\r\n boundary="+w.Boundary())
 	case isAlternative:
 		headers.Set(HdrContentType, ContentTypeMultipartAlt+";\r\n boundary="+w.Boundary())
+	case isRelated:
+		headers.Set(HdrContentType, ContentTypeMultipartRelated+";\r\n boundary="+w.Boundary())
 	case len(e.HTML) > 0:
 		headers.Set(HdrContentType, ContentTypeHTML+"; charset="+defaultCharEncoding)
 		headers.Set(HdrContentTransferEncoding, contentEncQuotedPrintable)
@@ -319,22 +326,30 @@ func (e *Email) Bytes() ([]byte, error) {
 		if len(e.HTML) > 0 {
 			messageWriter := subWriter
 			var relatedWriter *multipart.Writer
-			if len(htmlAttachments) > 0 {
-				relatedWriter = multipart.NewWriter(buff)
-				header := textproto.MIMEHeader{
-					HdrContentType: {ContentTypeMultipartRelated + ";\r\n boundary=" + relatedWriter.Boundary()},
-				}
-				if _, err := subWriter.CreatePart(header); err != nil {
-					return nil, err
+			if isRelated {
+				if isMixed || isAlternative {
+					// Keep the HTML body and its inline attachments together inside
+					// the mixed or alternative parent.
+					relatedWriter = multipart.NewWriter(buff)
+					header := textproto.MIMEHeader{
+						HdrContentType: {ContentTypeMultipartRelated + ";\r\n boundary=" + relatedWriter.Boundary()},
+					}
+					if _, err := subWriter.CreatePart(header); err != nil {
+						return nil, err
+					}
+				} else {
+					// An HTML-only related message writes directly to the root.
+					relatedWriter = w
 				}
 
 				messageWriter = relatedWriter
 			}
-			// Write the HTML.
-			if err := writeMessage(buff, e.HTML, isMixed || isAlternative, ContentTypeHTML, messageWriter); err != nil {
+			// Related HTML is a MIME part whether its container is the root or
+			// nested inside another multipart message.
+			if err := writeMessage(buff, e.HTML, isMixed || isAlternative || isRelated, ContentTypeHTML, messageWriter); err != nil {
 				return nil, err
 			}
-			if len(htmlAttachments) > 0 {
+			if isRelated {
 				for _, a := range htmlAttachments {
 					ap, err := relatedWriter.CreatePart(a.Header)
 					if err != nil {
@@ -344,7 +359,13 @@ func (e *Email) Bytes() ([]byte, error) {
 					base64Wrap(ap, a.Content)
 				}
 
-				relatedWriter.Close()
+				// Close nested related content here. The root writer closes after
+				// all top-level parts have been written.
+				if relatedWriter != w {
+					if err := relatedWriter.Close(); err != nil {
+						return nil, err
+					}
+				}
 			}
 		}
 		if isMixed && isAlternative {
@@ -364,7 +385,7 @@ func (e *Email) Bytes() ([]byte, error) {
 		base64Wrap(ap, a.Content)
 	}
 
-	if isMixed || isAlternative {
+	if isMixed || isAlternative || isRelated {
 		if err := w.Close(); err != nil {
 			return nil, err
 		}
