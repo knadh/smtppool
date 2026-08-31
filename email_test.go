@@ -94,11 +94,12 @@ func TestEmailWithHTMLAttachments(t *testing.T) {
 	e.HTML = []byte("<html><body>This is a text.</body></html>")
 
 	// Set HTML attachment to exercise "mime/related".
-	attachment, err := e.Attach(bytes.NewBufferString("Rad attachment"), "rad.txt", "image/png; charset=utf-8")
+	_, err := e.Attach(bytes.NewBufferString("Rad attachment"), "rad.txt", "image/png; charset=utf-8")
 	if err != nil {
 		t.Fatal("Could not add an attachment to the message: ", err)
 	}
-	attachment.HTMLRelated = true
+	// Attach returns a copy, so mark the attachment stored on the email.
+	e.Attachments[len(e.Attachments)-1].HTMLRelated = true
 
 	b, err := e.Bytes()
 	if err != nil {
@@ -150,6 +151,60 @@ func TestEmailWithHTMLAttachments(t *testing.T) {
 	}
 	if !imageFound {
 		t.Error("Did not find image part.")
+	}
+}
+
+func TestEmailHTMLOnlyWithRelatedAttachment(t *testing.T) {
+	e := prepareEmail()
+	e.HTML = []byte("<html><body><img src=\"cid:image.png\"></body></html>")
+
+	_, err := e.Attach(bytes.NewBufferString("image content"), "image.png", "image/png")
+	if err != nil {
+		t.Fatal("Could not add an attachment to the message: ", err)
+	}
+	e.Attachments[len(e.Attachments)-1].HTMLRelated = true
+
+	raw, err := e.Bytes()
+	if err != nil {
+		t.Fatal("Could not serialize e-mail: ", err)
+	}
+
+	msg, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal("Could not parse rendered message: ", err)
+	}
+
+	mediaType, params, err := mime.ParseMediaType(msg.Header.Get(HdrContentType))
+	if err != nil {
+		t.Fatal("Could not parse message Content-Type: ", err)
+	}
+	if mediaType != ContentTypeMultipartRelated {
+		t.Fatalf("Content-Type expected %q, not %q", ContentTypeMultipartRelated, mediaType)
+	}
+
+	related := multipart.NewReader(msg.Body, params[paramBoundary])
+	htmlPart, err := related.NextPart()
+	if err != nil {
+		t.Fatal("Could not read HTML part: ", err)
+	}
+	if contentType, _, err := mime.ParseMediaType(htmlPart.Header.Get(HdrContentType)); err != nil {
+		t.Fatal("Could not parse HTML part Content-Type: ", err)
+	} else if contentType != ContentTypeHTML {
+		t.Fatalf("HTML part Content-Type expected %q, not %q", ContentTypeHTML, contentType)
+	}
+
+	attachmentPart, err := related.NextPart()
+	if err != nil {
+		t.Fatal("Could not read related attachment: ", err)
+	}
+	if contentType, _, err := mime.ParseMediaType(attachmentPart.Header.Get(HdrContentType)); err != nil {
+		t.Fatal("Could not parse attachment Content-Type: ", err)
+	} else if contentType != "image/png" {
+		t.Fatalf("Attachment Content-Type expected %q, not %q", "image/png", contentType)
+	}
+
+	if _, err := related.NextPart(); err != io.EOF {
+		t.Fatalf("Expected exactly two related parts, got %v", err)
 	}
 }
 
