@@ -106,8 +106,6 @@ type LoginAuth struct {
 var (
 	// ErrPoolClosed is thrown when a closed Pool is used.
 	ErrPoolClosed = errors.New("pool closed")
-
-	netErr net.Error
 )
 
 // New initializes and returns a new SMTP Pool.
@@ -497,6 +495,7 @@ func combineEmails(lists ...[]string) ([]string, error) {
 // related and hence, can be retried.
 // eg: TCP/DNS/timeout/broken pipe etc.
 func canRetry(err error) bool {
+	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return true
 	} else if _, ok := err.(*net.OpError); ok {
