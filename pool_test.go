@@ -3,12 +3,15 @@ package smtppool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
 	"os/exec"
+	"sync"
 	"testing"
 	"time"
 )
@@ -231,5 +234,49 @@ func TestSendInvalidEmail(t *testing.T) {
 	// Verify no emails were actually sent
 	if count := getMessageCount(t); count != 0 {
 		t.Errorf("expected 0 messages, got %d", count)
+	}
+}
+
+func TestCanRetryConcurrent(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "timeout",
+			err:  &net.DNSError{Err: "timeout", IsTimeout: true},
+			want: true,
+		},
+		{
+			name: "wrapped_network_error",
+			err:  fmt.Errorf("send: %w", &net.OpError{Op: "write", Net: "tcp", Err: io.ErrClosedPipe}),
+			want: true,
+		},
+		{name: "eof", err: io.EOF, want: true},
+		{name: "other_error", err: errors.New("invalid message")},
+		{name: "nil"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for range 16 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					for range 100 {
+						if got := canRetry(tc.err); got != tc.want {
+							t.Errorf("canRetry(%v) = %v, want %v", tc.err, got, tc.want)
+							return
+						}
+					}
+				}()
+			}
+			close(start)
+			wg.Wait()
+		})
 	}
 }
