@@ -300,20 +300,14 @@ func (p *Pool) returnConn(c *conn, lastErr error) (err error) {
 	}()
 
 	if lastErr != nil {
-		// All non-textproto errors should close the connection.
-		if err, ok := lastErr.(*textproto.Error); !ok {
-			return lastErr
-		} else if err.Code >= 400 && err.Code < 500 {
-			// As an exception, transient (4xx) replies (eg: 421 rate-limit,
-			// 451 timeout) should also close the connection: the session may
-			// be in a compromised state, and any retry must dial a fresh
-			// connection rather than reuse this one.
+		var smtpErr *textproto.Error
+		// Discard failed connections so retries use a fresh session.
+		if !errors.As(lastErr, &smtpErr) || isTransientSMTP(lastErr) {
 			return lastErr
 		}
 	}
 
-	// Always RSET (SMTP) the connection bfeore reusing it as some servers
-	// throw "sender already specified", or "commands out of sequence" errors.
+	// Reset the session before reusing it.
 	if err := c.conn.Reset(); err != nil {
 		return err
 	}
@@ -419,43 +413,24 @@ func (c *conn) send(e Email) (bool, error) {
 		}
 	}
 
-	// Write the message.
-	w, err := c.conn.Data()
-	if err != nil {
-		return canRetry(err), err
-	}
-
-	isClosed := false
-	defer func() {
-		if !isClosed {
-			w.Close()
-		}
-	}()
-
-	// Get raw message payload.
+	// Build the message before starting DATA.
 	msg, err := e.Bytes()
 	if err != nil {
 		return false, err
 	}
 
+	w, err := c.conn.Data()
+	if err != nil {
+		return canRetry(err), err
+	}
 	if _, err = w.Write(msg); err != nil {
 		return canRetry(err), err
 	}
 
 	if err := w.Close(); err != nil {
-		// w.Close() writes the terminating "." and reads the server's final
-		// reply. A transient (4xx) reply here means the server explicitly did
-		// not accept the message (eg: SES "451 Timeout waiting for data from
-		// client." on a stale pooled connection), so it is safe to retry on a
-		// fresh connection. A connection-level error is deliberately NOT
-		// retried here: the server may have accepted the message before the
-		// socket dropped, and retrying could cause duplicate delivery.
-		if tperr, ok := err.(*textproto.Error); ok && tperr.Code >= 400 && tperr.Code < 500 {
-			return true, err
-		}
-		return false, err
+		// Only retry explicit rejections.
+		return isTransientSMTP(err), err
 	}
-	isClosed = true
 
 	return false, nil
 }
@@ -504,26 +479,14 @@ func combineEmails(lists ...[]string) ([]string, error) {
 	return out, nil
 }
 
-// canRetry returns true if the given SMTP err is network related or a
-// transient (4xx) SMTP reply, and hence, can be retried.
-// eg: TCP/DNS/timeout/broken pipe, or "451 Timeout waiting for data" etc.
+// canRetry reports whether a network or temporary SMTP error can be retried.
 func canRetry(err error) bool {
 	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true
-	} else if _, ok := err.(*net.OpError); ok {
-		return true
-	} else if err == io.EOF {
-		return true
-	} else if tperr, ok := err.(*textproto.Error); ok {
-		// Transient (4xx) SMTP replies are safe to retry on a fresh
-		// connection: the server explicitly did not accept the message, so a
-		// retry cannot cause duplicate delivery. Permanent (5xx) replies
-		// (bad recipient, message rejected, etc.) must not be retried.
-		// eg: AWS SES returns "451 4.4.2 Timeout waiting for data from
-		// client." when a pooled connection has gone stale.
-		return tperr.Code >= 400 && tperr.Code < 500
-	}
+	return errors.As(err, &netErr) || errors.Is(err, io.EOF) || isTransientSMTP(err)
+}
 
-	return false
+// isTransientSMTP checks whether the server returned a 4xx response.
+func isTransientSMTP(err error) bool {
+	var smtpErr *textproto.Error
+	return errors.As(err, &smtpErr) && smtpErr.Code >= 400 && smtpErr.Code < 500
 }
