@@ -300,17 +300,14 @@ func (p *Pool) returnConn(c *conn, lastErr error) (err error) {
 	}()
 
 	if lastErr != nil {
-		// All non-textproto errors should close the connection.
-		if err, ok := lastErr.(*textproto.Error); !ok {
-			return lastErr
-		} else if err.Code == 421 {
-			// As an exception, 421 (rate-limit) errors should also close the connection.
+		var smtpErr *textproto.Error
+		// Discard failed connections so retries use a fresh session.
+		if !errors.As(lastErr, &smtpErr) || isTransientSMTP(lastErr) {
 			return lastErr
 		}
 	}
 
-	// Always RSET (SMTP) the connection bfeore reusing it as some servers
-	// throw "sender already specified", or "commands out of sequence" errors.
+	// Reset the session before reusing it.
 	if err := c.conn.Reset(); err != nil {
 		return err
 	}
@@ -416,33 +413,24 @@ func (c *conn) send(e Email) (bool, error) {
 		}
 	}
 
-	// Write the message.
-	w, err := c.conn.Data()
-	if err != nil {
-		return canRetry(err), err
-	}
-
-	isClosed := false
-	defer func() {
-		if !isClosed {
-			w.Close()
-		}
-	}()
-
-	// Get raw message payload.
+	// Build the message before starting DATA.
 	msg, err := e.Bytes()
 	if err != nil {
 		return false, err
 	}
 
+	w, err := c.conn.Data()
+	if err != nil {
+		return canRetry(err), err
+	}
 	if _, err = w.Write(msg); err != nil {
 		return canRetry(err), err
 	}
 
 	if err := w.Close(); err != nil {
-		return false, err
+		// Only retry explicit rejections.
+		return isTransientSMTP(err), err
 	}
-	isClosed = true
 
 	return false, nil
 }
@@ -491,18 +479,14 @@ func combineEmails(lists ...[]string) ([]string, error) {
 	return out, nil
 }
 
-// canRetry returns true if the given SMTP err is network
-// related and hence, can be retried.
-// eg: TCP/DNS/timeout/broken pipe etc.
+// canRetry reports whether a network or temporary SMTP error can be retried.
 func canRetry(err error) bool {
 	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true
-	} else if _, ok := err.(*net.OpError); ok {
-		return true
-	} else if err == io.EOF {
-		return true
-	}
+	return errors.As(err, &netErr) || errors.Is(err, io.EOF) || isTransientSMTP(err)
+}
 
-	return false
+// isTransientSMTP checks whether the server returned a 4xx response.
+func isTransientSMTP(err error) bool {
+	var smtpErr *textproto.Error
+	return errors.As(err, &smtpErr) && smtpErr.Code >= 400 && smtpErr.Code < 500
 }
