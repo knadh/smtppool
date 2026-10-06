@@ -127,7 +127,7 @@ func New(o Opt) (*Pool, error) {
 	}
 
 	// Start the idle connection sweeper.
-	if o.IdleTimeout.Seconds() >= 1 && o.MaxConns > 1 {
+	if o.IdleTimeout >= time.Second && o.MaxConns > 1 {
 		go p.sweepConns(time.Second * 2)
 	}
 	return p, nil
@@ -176,9 +176,9 @@ func (p *Pool) Close() {
 	p.closed.Store(true)
 	close(p.stopBorrow)
 
-	// If the sweeper isn't already running, run it.
-	if p.opt.IdleTimeout.Seconds() <= 1 {
-		p.sweepConns(time.Second * 1)
+	// If `New()` didn't start the idle sweeper, run it.
+	if p.opt.IdleTimeout < time.Second || p.opt.MaxConns <= 1 {
+		p.sweepConns(time.Second)
 	}
 }
 
