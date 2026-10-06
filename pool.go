@@ -86,10 +86,6 @@ type Pool struct {
 
 	// closed marks the pool as closed.
 	closed atomic.Bool
-
-	// sweeping is true when New started the background idle sweeper. Close
-	// only runs a blocking sweep itself when it is false.
-	sweeping bool
 }
 
 // conn represents an SMTP client connection in the pool.
@@ -131,8 +127,7 @@ func New(o Opt) (*Pool, error) {
 	}
 
 	// Start the idle connection sweeper.
-	if o.IdleTimeout.Seconds() >= 1 && o.MaxConns > 1 {
-		p.sweeping = true
+	if o.IdleTimeout >= time.Second && o.MaxConns > 1 {
 		go p.sweepConns(time.Second * 2)
 	}
 	return p, nil
@@ -181,9 +176,9 @@ func (p *Pool) Close() {
 	p.closed.Store(true)
 	close(p.stopBorrow)
 
-	// If the sweeper isn't already running, run it.
-	if !p.sweeping {
-		p.sweepConns(time.Second * 1)
+	// If `New()` didn't start the idle sweeper, run it.
+	if p.opt.IdleTimeout < time.Second || p.opt.MaxConns <= 1 {
+		p.sweepConns(time.Second)
 	}
 }
 
