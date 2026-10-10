@@ -64,6 +64,7 @@ const (
 	defaultCharEncoding = "UTF-8"
 	defaultMimeVersion  = "1.0"
 	defaultHostname     = "localhost.localdomain"
+	headerLineLength    = 76
 
 	contentEncBase64          = "base64"
 	contentEncQuotedPrintable = "quoted-printable"
@@ -679,18 +680,45 @@ func headerToBytes(buff io.Writer, header textproto.MIMEHeader) {
 	for field, vals := range header {
 		for _, subval := range vals {
 			// bytes.Buffer.Write() never returns an error.
-			io.WriteString(buff, field)
-			io.WriteString(buff, ": ")
 			// Write the encoded header if needed
-			switch {
-			case field == HdrContentType || field == HdrContentDisposition:
-				buff.Write([]byte(subval))
-			default:
-				buff.Write([]byte(mime.QEncoding.Encode(defaultCharEncoding, subval)))
+			if field != HdrContentType && field != HdrContentDisposition {
+				subval = mime.QEncoding.Encode(defaultCharEncoding, subval)
 			}
+			io.WriteString(buff, foldHeader(field+": "+subval))
 			io.WriteString(buff, "\r\n")
 		}
 	}
+}
+
+func foldHeader(value string) string {
+	var folded strings.Builder
+	for i, line := range strings.Split(value, "\r\n") {
+		if i > 0 {
+			folded.WriteString("\r\n")
+		}
+		for len(strings.TrimRight(line, " \t")) > headerLineLength {
+			split := strings.LastIndexAny(line[:headerLineLength+1], " \t")
+			for split > 0 && (line[split-1] == ' ' || line[split-1] == '\t') {
+				split--
+			}
+			if split <= 0 {
+				start := len(line) - len(strings.TrimLeft(line, " \t"))
+				next := strings.IndexAny(line[start:], " \t")
+				if next < 0 {
+					break
+				}
+				split = start + next
+			}
+			if strings.TrimRight(line[split:], " \t") == "" {
+				break
+			}
+			folded.WriteString(line[:split])
+			folded.WriteString("\r\n")
+			line = line[split:]
+		}
+		folded.WriteString(line)
+	}
+	return folded.String()
 }
 
 // generateMessageID generates and returns a string suitable for an RFC 2822
