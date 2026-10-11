@@ -717,3 +717,96 @@ func TestParseSender(t *testing.T) {
 		}
 	}
 }
+
+func TestLongHeaderFolding(t *testing.T) {
+	ids := make([]string, 20)
+	for i := range ids {
+		ids[i] = "<CA+=9-6CeOUeqtczsUSG2LXjeCFttd7f33drkaxmxhAbz-7-_Yw@mail.gmail.com>"
+	}
+	refs := strings.Join(ids, " ")
+	subject := strings.Repeat("Ünïcödé subject that keeps going ", 8)
+
+	e := prepareEmail()
+	e.Subject = subject
+	e.Text = []byte("Text body\n")
+	e.Headers = textproto.MIMEHeader{}
+	e.Headers.Set("References", refs)
+	// Multipart messages carry a pre-folded Content-Type header.
+	if _, err := e.Attach(bytes.NewBufferString("attachment"), "a.txt", "text/plain"); err != nil {
+		t.Fatal("Could not attach file: ", err)
+	}
+
+	raw, err := e.Bytes()
+	if err != nil {
+		t.Fatal("Could not convert email to bytes: ", err)
+	}
+
+	// RFC 5321/5322: a line must not exceed 998 characters (plus CRLF).
+	head, _, _ := bytes.Cut(raw, []byte("\r\n\r\n"))
+	refLines := 0
+	inRefs := false
+	for _, line := range strings.Split(string(head), "\r\n") {
+		if len(line) > 998 {
+			t.Errorf("header line is %d characters long, want at most 998: %.80q...", len(line), line)
+		}
+		if strings.HasPrefix(line, "References: ") {
+			inRefs = true
+		} else if !strings.HasPrefix(line, " ") {
+			inRefs = false
+		}
+		if inRefs {
+			refLines++
+		}
+	}
+	if refLines < 2 {
+		t.Errorf("long References header was not folded")
+	}
+
+	msg, err := mail.ReadMessage(bytes.NewBuffer(raw))
+	if err != nil {
+		t.Fatal("Could not parse rendered message: ", err)
+	}
+	if got := msg.Header.Get("References"); got != refs {
+		t.Errorf("References header does not unfold to the original value:\n got: %q\nwant: %q", got, refs)
+	}
+	got, err := (&mime.WordDecoder{}).DecodeHeader(msg.Header.Get("Subject"))
+	if err != nil {
+		t.Fatal("Could not decode Subject: ", err)
+	}
+	if got != subject {
+		t.Errorf("Subject header does not unfold to the original value:\n got: %q\nwant: %q", got, subject)
+	}
+}
+
+func TestFoldHeaderValue(t *testing.T) {
+	short := "Awesome Subject"
+	if got := foldHeaderValue(short, len("Subject: ")); got != short {
+		t.Errorf("short value should not be folded, got %q", got)
+	}
+
+	// Values that are already folded are left alone.
+	prefolded := ContentTypeMultipartMixed + ";\r\n boundary=" + strings.Repeat("b", 70)
+	if got := foldHeaderValue(prefolded, len("Content-Type: ")); got != prefolded {
+		t.Errorf("pre-folded value should not be changed, got %q", got)
+	}
+
+	// A single word longer than the limit cannot be folded and is kept intact.
+	long := strings.Repeat("x", 100)
+	if got := foldHeaderValue(long, len("X-Long: ")); got != long {
+		t.Errorf("value without spaces should not be changed, got %q", got)
+	}
+
+	value := strings.TrimSpace(strings.Repeat("word ", 40))
+	folded := foldHeaderValue(value, len("X-Words: "))
+	if unfolded := strings.ReplaceAll(folded, "\r\n", ""); unfolded != value {
+		t.Errorf("unfolding should give back the original value, got %q", unfolded)
+	}
+	for _, line := range strings.Split("X-Words: "+folded, "\r\n") {
+		if len(line) > maxHeaderLineLength {
+			t.Errorf("line is %d characters long: %q", len(line), line)
+		}
+		if strings.TrimSpace(line) == "" {
+			t.Errorf("folded header contains a whitespace-only line")
+		}
+	}
+}

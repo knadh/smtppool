@@ -38,6 +38,10 @@ const (
 
 	// MaxLineLength is the maximum line length per RFC 2045.
 	MaxLineLength = 76
+
+	// maxHeaderLineLength is the line length header values are folded at
+	// per RFC 5322 (section 2.2.3).
+	maxHeaderLineLength = 78
 )
 
 // SMTP headers and fields.
@@ -682,15 +686,51 @@ func headerToBytes(buff io.Writer, header textproto.MIMEHeader) {
 			io.WriteString(buff, field)
 			io.WriteString(buff, ": ")
 			// Write the encoded header if needed
+			var value string
 			switch {
 			case field == HdrContentType || field == HdrContentDisposition:
-				buff.Write([]byte(subval))
+				value = subval
 			default:
-				buff.Write([]byte(mime.QEncoding.Encode(defaultCharEncoding, subval)))
+				value = mime.QEncoding.Encode(defaultCharEncoding, subval)
 			}
+			io.WriteString(buff, foldHeaderValue(value, len(field)+len(": ")))
 			io.WriteString(buff, "\r\n")
 		}
 	}
+}
+
+// foldHeaderValue folds a header value at its existing spaces so that lines
+// stay within the 78 characters recommended by RFC 5322 (section 2.2.3) where
+// possible, and well below the 998 character limit that SMTP servers enforce.
+// Each fold inserts CRLF before an existing space, so unfolding the header
+// gives back the original value. Runs without spaces are never broken.
+// offset is the length of the "Field: " prefix already written on the line.
+// Values that already contain line breaks (e.g. the multipart Content-Type
+// values built in Bytes()) are folded already and are returned unchanged.
+func foldHeaderValue(value string, offset int) string {
+	if offset+len(value) <= maxHeaderLineLength || strings.ContainsAny(value, "\r\n") {
+		return value
+	}
+
+	var b strings.Builder
+	lineLen := offset
+	// A folded line must not consist of whitespace only.
+	hasText := false
+	for i, word := range strings.Split(value, " ") {
+		if i > 0 {
+			if word != "" && hasText && lineLen+1+len(word) > maxHeaderLineLength {
+				b.WriteString("\r\n")
+				lineLen = 0
+				hasText = false
+			}
+			b.WriteByte(' ')
+			lineLen++
+		}
+		b.WriteString(word)
+		lineLen += len(word)
+		hasText = hasText || word != ""
+	}
+	return b.String()
 }
 
 // generateMessageID generates and returns a string suitable for an RFC 2822
