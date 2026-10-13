@@ -283,6 +283,65 @@ func TestHeaderToBytesEmptyHeaders(t *testing.T) {
 	}
 }
 
+func FuzzWriteFoldedHeader(f *testing.F) {
+	for _, value := range []string{
+		"", "Subject: short", "Subject: " + strings.Repeat("a", 68),
+		"References: " + strings.Repeat("<id@example.com>\t", 100),
+		"X: " + strings.Repeat("word ", 100) + strings.Repeat(" \t", 1000),
+		strings.Repeat(" \t", 1000), strings.Repeat(" ", 200) + "word",
+		"X: " + strings.Repeat("a", 1200) + " next",
+		"Content-Type: text/plain;\r\n name=\"" + strings.Repeat("word ", 100) + "end\"",
+		"X: first\r\n\r\n\tsecond\r\n",
+	} {
+		f.Add(value)
+	}
+	f.Fuzz(func(t *testing.T, value string) {
+		if len(value) > 8192 {
+			t.Skip()
+		}
+
+		var folded, again bytes.Buffer
+		writeFoldedHeader(&folded, value)
+		if strings.ReplaceAll(folded.String(), "\r\n", "") != strings.ReplaceAll(value, "\r\n", "") {
+			t.Fatal("folding changed the unfolded value")
+		}
+
+		writeFoldedHeader(&again, folded.String())
+		if !bytes.Equal(folded.Bytes(), again.Bytes()) {
+			t.Fatal("folding is not idempotent")
+		}
+
+		// Check each original line separately so existing breaks (including
+		// invalid ones) are distinguished from newly inserted folds.
+		var joined bytes.Buffer
+		for i, line := range strings.Split(value, "\r\n") {
+			if i > 0 {
+				joined.WriteString("\r\n")
+			}
+
+			var part bytes.Buffer
+			writeFoldedHeader(&part, line)
+			joined.Write(part.Bytes())
+			for j, continuation := range strings.Split(part.String(), "\r\n") {
+				text := strings.Trim(continuation, " \t")
+				if j > 0 && (text == "" || (continuation[0] != ' ' && continuation[0] != '\t')) {
+					t.Fatalf("invalid continuation: %q", continuation)
+				}
+
+				// Very long lines are only necessary for indivisible words or
+				// whitespaces. Subsequent word must break to a new line.
+				if len(strings.TrimRight(continuation, " \t")) > headerLineLength && strings.ContainsAny(text, " \t") {
+					t.Fatalf("missed fold in %q", continuation)
+				}
+			}
+		}
+
+		if !bytes.Equal(folded.Bytes(), joined.Bytes()) {
+			t.Fatal("folding changed existing line breaks")
+		}
+	})
+}
+
 func FuzzHeaderToBytesFolding(f *testing.F) {
 	for _, value := range []string{
 		"", "short", "é" + strings.Repeat("a", 50), "é" + strings.Repeat("a", 51),
