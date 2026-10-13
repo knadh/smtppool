@@ -690,6 +690,7 @@ func headerToBytes(buff io.Writer, header textproto.MIMEHeader) {
 	}
 }
 
+// foldHeader wraps header lines longer than headerLineLength by inserting CRLF before whitespace (RFC 5322 2.2.3).
 func foldHeader(value string) string {
 	var folded strings.Builder
 	for i, line := range strings.Split(value, "\r\n") {
@@ -698,9 +699,11 @@ func foldHeader(value string) string {
 		}
 		for len(strings.TrimRight(line, " \t")) > headerLineLength {
 			split := strings.LastIndexAny(line[:headerLineLength+1], " \t")
+			// Fold before the whole whitespace run so the continuation line starts with whitespace.
 			for split > 0 && (line[split-1] == ' ' || line[split-1] == '\t') {
 				split--
 			}
+			// No whitespace within the limit. Fold at the next whitespace instead, leaving one over-long line.
 			if split <= 0 {
 				start := len(line) - len(strings.TrimLeft(line, " \t"))
 				next := strings.IndexAny(line[start:], " \t")
@@ -709,6 +712,7 @@ func foldHeader(value string) string {
 				}
 				split = start + next
 			}
+			// A whitespace-only continuation line is invalid, so stop folding.
 			if strings.TrimRight(line[split:], " \t") == "" {
 				break
 			}
