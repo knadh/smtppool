@@ -64,6 +64,7 @@ const (
 	defaultCharEncoding = "UTF-8"
 	defaultMimeVersion  = "1.0"
 	defaultHostname     = "localhost.localdomain"
+	headerLineLength    = 76
 
 	contentEncBase64          = "base64"
 	contentEncQuotedPrintable = "quoted-printable"
@@ -678,18 +679,58 @@ func base64Wrap(w io.Writer, b []byte) {
 func headerToBytes(buff io.Writer, header textproto.MIMEHeader) {
 	for field, vals := range header {
 		for _, subval := range vals {
-			// bytes.Buffer.Write() never returns an error.
-			io.WriteString(buff, field)
-			io.WriteString(buff, ": ")
-			// Write the encoded header if needed
-			switch {
-			case field == HdrContentType || field == HdrContentDisposition:
-				buff.Write([]byte(subval))
-			default:
-				buff.Write([]byte(mime.QEncoding.Encode(defaultCharEncoding, subval)))
+			// Write the encoded header if needed.
+			if field != HdrContentType && field != HdrContentDisposition {
+				subval = mime.QEncoding.Encode(defaultCharEncoding, subval)
+			}
+			if len(field)+2+len(subval) <= headerLineLength {
+				io.WriteString(buff, field)
+				io.WriteString(buff, ": ")
+				io.WriteString(buff, subval)
+			} else {
+				writeFoldedHeader(buff, field+": "+subval)
 			}
 			io.WriteString(buff, "\r\n")
 		}
+	}
+}
+
+// writeFoldedHeader inserts CRLF before whitespace without breaking words or
+// changing the unfolded value. Existing line breaks are preserved.
+func writeFoldedHeader(buff io.Writer, value string) {
+	for {
+		line, rest, more := strings.Cut(value, "\r\n")
+		// Exclude trailing whitespace from fold searches to avoid empty continuation lines.
+		end := len(strings.TrimRight(line, " \t"))
+		for end > headerLineLength {
+			split := strings.LastIndexAny(line[:headerLineLength+1], " \t")
+			// Fold before the whole whitespace run so the continuation line starts with whitespace.
+			for split > 0 && (line[split-1] == ' ' || line[split-1] == '\t') {
+				split--
+			}
+			// No whitespace within the limit. Fold at the next whitespace instead, leaving one over-long line.
+			if split <= 0 {
+				start := len(line) - len(strings.TrimLeft(line, " \t"))
+				next := strings.IndexAny(line[start:end], " \t")
+				if next < 0 {
+					break
+				}
+				split = start + next
+			}
+
+			io.WriteString(buff, line[:split])
+			io.WriteString(buff, "\r\n")
+			line = line[split:]
+			end -= split
+		}
+
+		io.WriteString(buff, line)
+		if !more {
+			return
+		}
+
+		io.WriteString(buff, "\r\n")
+		value = rest
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"bytes"
 	"crypto/rand"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"mime"
@@ -16,6 +17,7 @@ import (
 	"mime/quotedprintable"
 	"net/mail"
 	"net/textproto"
+	"unicode/utf8"
 )
 
 func prepareEmail() Email {
@@ -83,6 +85,309 @@ func TestEmailText(t *testing.T) {
 	} else if mt != "text/plain" {
 		t.Fatalf("Content-type expected \"text/plain\", not %v", mt)
 	}
+}
+
+func TestEmailLongReferences(t *testing.T) {
+	for _, count := range []int{0, 1, 8, 15, 20, 200} {
+		for _, idBytes := range []int{30, 66, 74, 75, 76, 77, 78, 90, 130, 990} {
+			for _, trailing := range []string{"", " ", "  ", "\t", " \t "} {
+				for _, repeated := range []bool{false, true} {
+					name := fmt.Sprintf("count=%d/bytes=%d/trailing=%q/repeated=%t", count, idBytes, trailing, repeated)
+					t.Run(name, func(t *testing.T) {
+						ids := make([]string, count)
+						for i := range count {
+							index := i
+							if repeated {
+								index = 0
+							}
+							ids[i] = "<" + fmt.Sprintf("%03d", index) + strings.Repeat("a", idBytes-15) + "@example.com>"
+						}
+						references := strings.Join(ids, " ") + trailing
+						e := prepareEmail()
+						e.Text = []byte("Reply.")
+						e.Headers = textproto.MIMEHeader{"References": {references}}
+						if len(ids) > 0 {
+							e.Headers.Set("In-Reply-To", ids[len(ids)-1])
+						}
+						raw, err := e.Bytes()
+						if err != nil {
+							t.Fatal(err)
+						}
+						checkHeaderLines(t, raw)
+						msg, err := mail.ReadMessage(bytes.NewReader(raw))
+						if err != nil {
+							t.Fatal(err)
+						}
+						if got := msg.Header.Get("References"); got != strings.Join(ids, " ") {
+							t.Error("References changed after parsing")
+						}
+						if len(ids) > 0 && msg.Header.Get("In-Reply-To") != ids[len(ids)-1] {
+							t.Error("In-Reply-To changed after parsing")
+						}
+						if e.Headers.Get("References") != references {
+							t.Error("input References changed")
+						}
+						body, err := io.ReadAll(msg.Body)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if !bytes.Equal(body, e.Text) {
+							t.Errorf("body = %q, want %q", body, e.Text)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestHeaderToBytesFolding(t *testing.T) {
+	cases := []struct {
+		name         string
+		field        string
+		value        string
+		maxLineBytes int
+	}{
+		{name: "short", field: HdrSubject, value: "A short subject"},
+		{name: "empty", field: "References"},
+		{name: "76 bytes", field: HdrSubject, value: strings.Repeat("a", 67)},
+		{name: "77 bytes", field: HdrSubject, value: strings.Repeat("a", 68)},
+		{name: "78 bytes", field: HdrSubject, value: strings.Repeat("a", 69)},
+		{name: "79 bytes", field: HdrSubject, value: strings.Repeat("a", 70)},
+		{name: "long subject", field: HdrSubject, value: strings.Repeat("word ", 300) + "end"},
+		{name: "spaces and tabs", field: HdrSubject, value: strings.Repeat("word \t  ", 30) + "end"},
+		{name: "unicode", field: HdrSubject, value: strings.Repeat("Résumé ", 100) + "end"},
+		{name: "long message ID", field: "References", value: "<" + strings.Repeat("a", 120) + "@example.com>", maxLineBytes: 998},
+		{name: "repeated IDs", field: "References", value: strings.Repeat("<message@example.com> ", 60) + "<message@example.com>"},
+		{name: "folded content type", field: HdrContentType, value: "multipart/mixed;\r\n boundary=example"},
+		{name: "unicode 77 byte regression", field: HdrSubject, value: "é" + strings.Repeat("a", 50)},
+		{name: "unicode 78 byte regression", field: HdrSubject, value: "é" + strings.Repeat("a", 51)},
+		{name: "emoji", field: HdrSubject, value: strings.Repeat("🙂 report ", 30)},
+		{name: "non Latin", field: HdrSubject, value: strings.Repeat("报告 ", 40)},
+		{name: "trailing space after long ID", field: "References", value: "<" + strings.Repeat("a", 75) + "@example.com> ", maxLineBytes: 998},
+		{name: "trailing tabs after long ID", field: "References", value: "<" + strings.Repeat("a", 75) + "@example.com>\t\t", maxLineBytes: 998},
+		{name: "trailing mixed whitespace", field: "References", value: "<" + strings.Repeat("a", 75) + "@example.com> \t  ", maxLineBytes: 998},
+		{name: "long trailing whitespace", field: HdrSubject, value: "word" + strings.Repeat(" ", 200), maxLineBytes: 998},
+		{name: "long leading whitespace", field: HdrSubject, value: strings.Repeat(" ", 200) + "word", maxLineBytes: 998},
+		{name: "long internal whitespace", field: HdrSubject, value: "first" + strings.Repeat(" \t", 60) + "last", maxLineBytes: 998},
+		{name: "whitespace only value", field: "X-Example", value: strings.Repeat(" ", 200), maxLineBytes: 998},
+		{name: "tabs only value", field: "X-Example", value: strings.Repeat("\t", 200), maxLineBytes: 998},
+		{name: "folded long MIME value", field: HdrContentDisposition, value: "attachment;\r\n filename=\"" + strings.Repeat("monthly report ", 20) + "end.txt\""},
+		{name: "MIME quotes and escapes", field: HdrContentDisposition, value: "attachment; filename=\"" + strings.Repeat("annual report ", 20) + "quoted\\\"name.txt\""},
+		{name: "folded disposition", field: HdrContentDisposition, value: "attachment;\r\n filename=\"monthly report.txt\""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw bytes.Buffer
+			headerToBytes(&raw, textproto.MIMEHeader{tc.field: {tc.value}})
+			checkHeaderLines(t, append(bytes.Clone(raw.Bytes()), []byte("\r\n")...))
+			limit := tc.maxLineBytes
+			if limit == 0 {
+				limit = 76
+			}
+			for i, line := range strings.Split(strings.TrimSuffix(raw.String(), "\r\n"), "\r\n") {
+				if len(line) > limit {
+					t.Errorf("header line has %d bytes, limit is %d", len(line), limit)
+				}
+				if i > 0 && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+					t.Errorf("continuation line has no leading whitespace: %q", line)
+				}
+			}
+			unfolded := strings.ReplaceAll(strings.TrimSuffix(raw.String(), "\r\n"), "\r\n", "")
+			encoded, ok := strings.CutPrefix(unfolded, tc.field+": ")
+			if !ok {
+				t.Fatalf("unexpected header: %q", raw.String())
+			}
+			decoded, err := (&mime.WordDecoder{}).DecodeHeader(encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := strings.ReplaceAll(tc.value, "\r\n", ""); decoded != want {
+				t.Errorf("unfolded value = %q, want %q", decoded, want)
+			}
+			expectedValue := tc.value
+			if tc.field != HdrContentType && tc.field != HdrContentDisposition {
+				expectedValue = mime.QEncoding.Encode(defaultCharEncoding, expectedValue)
+			}
+			if len(tc.field)+2+len(expectedValue) <= 76 && !strings.Contains(expectedValue, "\r\n") {
+				if want := tc.field + ": " + expectedValue + "\r\n"; raw.String() != want {
+					t.Errorf("short header = %q, want %q", raw.String(), want)
+				}
+			} else if tc.maxLineBytes == 0 && !strings.Contains(strings.TrimSuffix(raw.String(), "\r\n"), "\r\n") {
+				t.Error("long header was not folded")
+			}
+		})
+	}
+}
+
+func TestHeaderToBytesMultipleValues(t *testing.T) {
+	values := []string{strings.Repeat("first ", 30) + "end", strings.Repeat("second ", 30) + "end"}
+	var raw bytes.Buffer
+	headerToBytes(&raw, textproto.MIMEHeader{"X-Example": values})
+	raw.WriteString("\r\n")
+	headers, err := textproto.NewReader(bufio.NewReader(&raw)).ReadMIMEHeader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := headers.Values("X-Example")
+	if len(got) != len(values) {
+		t.Fatalf("got %d header values, want %d", len(got), len(values))
+	}
+	for i := range values {
+		if got[i] != values[i] {
+			t.Errorf("header value %d = %q, want %q", i, got[i], values[i])
+		}
+	}
+}
+
+func TestEmailEncodedSubjectBoundaries(t *testing.T) {
+	for _, text := range []string{"é", "报告", "🙂", "Résumé "} {
+		for length := range 161 {
+			for _, subject := range []string{text + strings.Repeat("a", length), strings.Repeat("a", length) + text} {
+				name := fmt.Sprintf("text=%q/length=%d/subject=%q", text, length, subject)
+				t.Run(name, func(t *testing.T) {
+					e := prepareEmail()
+					e.Subject = subject
+					raw, err := e.Bytes()
+					if err != nil {
+						t.Fatal(err)
+					}
+					checkHeaderLines(t, raw)
+					msg, err := mail.ReadMessage(bytes.NewReader(raw))
+					if err != nil {
+						t.Fatal(err)
+					}
+					got, err := (&mime.WordDecoder{}).DecodeHeader(msg.Header.Get(HdrSubject))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got != subject {
+						t.Errorf("subject = %q, want %q", got, subject)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestHeaderToBytesEmptyHeaders(t *testing.T) {
+	cases := []textproto.MIMEHeader{nil, {}, {"X-Example": nil}, {"X-Example": {}}}
+	for i, header := range cases {
+		t.Run(fmt.Sprintf("case=%d", i), func(t *testing.T) {
+			var raw bytes.Buffer
+			headerToBytes(&raw, header)
+			if raw.Len() != 0 {
+				t.Errorf("empty headers produced %q", raw.String())
+			}
+		})
+	}
+}
+
+func FuzzWriteFoldedHeader(f *testing.F) {
+	for _, value := range []string{
+		"", "Subject: short", "Subject: " + strings.Repeat("a", 68),
+		"References: " + strings.Repeat("<id@example.com>\t", 100),
+		"X: " + strings.Repeat("word ", 100) + strings.Repeat(" \t", 1000),
+		strings.Repeat(" \t", 1000), strings.Repeat(" ", 200) + "word",
+		"X: " + strings.Repeat("a", 1200) + " next",
+		"Content-Type: text/plain;\r\n name=\"" + strings.Repeat("word ", 100) + "end\"",
+		"X: first\r\n\r\n\tsecond\r\n",
+	} {
+		f.Add(value)
+	}
+	f.Fuzz(func(t *testing.T, value string) {
+		if len(value) > 8192 {
+			t.Skip()
+		}
+
+		var folded, again bytes.Buffer
+		writeFoldedHeader(&folded, value)
+		if strings.ReplaceAll(folded.String(), "\r\n", "") != strings.ReplaceAll(value, "\r\n", "") {
+			t.Fatal("folding changed the unfolded value")
+		}
+
+		writeFoldedHeader(&again, folded.String())
+		if !bytes.Equal(folded.Bytes(), again.Bytes()) {
+			t.Fatal("folding is not idempotent")
+		}
+
+		// Check each original line separately so existing breaks (including
+		// invalid ones) are distinguished from newly inserted folds.
+		var joined bytes.Buffer
+		for i, line := range strings.Split(value, "\r\n") {
+			if i > 0 {
+				joined.WriteString("\r\n")
+			}
+
+			var part bytes.Buffer
+			writeFoldedHeader(&part, line)
+			joined.Write(part.Bytes())
+			for j, continuation := range strings.Split(part.String(), "\r\n") {
+				text := strings.Trim(continuation, " \t")
+				if j > 0 && (text == "" || (continuation[0] != ' ' && continuation[0] != '\t')) {
+					t.Fatalf("invalid continuation: %q", continuation)
+				}
+
+				// Very long lines are only necessary for indivisible words or
+				// whitespaces. Subsequent word must break to a new line.
+				if len(strings.TrimRight(continuation, " \t")) > headerLineLength && strings.ContainsAny(text, " \t") {
+					t.Fatalf("missed fold in %q", continuation)
+				}
+			}
+		}
+
+		if !bytes.Equal(folded.Bytes(), joined.Bytes()) {
+			t.Fatal("folding changed existing line breaks")
+		}
+	})
+}
+
+func FuzzHeaderToBytesFolding(f *testing.F) {
+	for _, value := range []string{
+		"", "short", "é" + strings.Repeat("a", 50), "é" + strings.Repeat("a", 51),
+		strings.Repeat("word ", 300), strings.Repeat(" \t", 60),
+		"first" + strings.Repeat(" \t", 60) + "last",
+		strings.Repeat("a", 75) + " ", strings.Repeat("a", 75) + "\t\t",
+		strings.Repeat("Résumé 🙂 报告 ", 40),
+	} {
+		f.Add(value)
+	}
+	f.Fuzz(func(t *testing.T, value string) {
+		if len(value) > 4096 || !utf8.ValidString(value) || strings.Contains(value, "=?") {
+			t.Skip()
+		}
+		whitespaceRun, wordRun := 0, 0
+		for _, r := range value {
+			if r != '\t' && (r < 32 || r == 127) {
+				t.Skip()
+			}
+			if r == ' ' || r == '\t' {
+				whitespaceRun++
+				wordRun = 0
+			} else {
+				wordRun += utf8.RuneLen(r)
+				whitespaceRun = 0
+			}
+			if whitespaceRun > 200 || wordRun > 200 {
+				t.Skip()
+			}
+		}
+		var raw bytes.Buffer
+		headerToBytes(&raw, textproto.MIMEHeader{HdrSubject: {value}})
+		checkHeaderLines(t, append(bytes.Clone(raw.Bytes()), []byte("\r\n")...))
+		unfolded := strings.ReplaceAll(strings.TrimSuffix(raw.String(), "\r\n"), "\r\n", "")
+		encoded, ok := strings.CutPrefix(unfolded, HdrSubject+": ")
+		if !ok {
+			t.Fatal("Subject header changed")
+		}
+		decoded, err := (&mime.WordDecoder{}).DecodeHeader(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decoded != value {
+			t.Errorf("decoded value = %q, want %q", decoded, value)
+		}
+	})
 }
 
 func TestEmailWithHTMLAttachments(t *testing.T) {
@@ -714,6 +1019,28 @@ func TestParseSender(t *testing.T) {
 		got, err := testcase.e.parseSender()
 		if got != testcase.want || (err != nil) != testcase.haserr {
 			t.Errorf(`%d: got %s != want %s or error "%t" != "%t"`, i+1, got, testcase.want, err != nil, testcase.haserr)
+		}
+	}
+}
+
+func checkHeaderLines(t *testing.T, raw []byte) {
+	t.Helper()
+	header, _, ok := bytes.Cut(raw, []byte("\r\n\r\n"))
+	if !ok {
+		t.Fatal("missing header separator")
+	}
+	for _, line := range bytes.Split(header, []byte("\r\n")) {
+		if len(line) > 998 {
+			t.Errorf("header line has %d bytes, limit is 998", len(line))
+		}
+		if len(bytes.Trim(line, " \t")) == 0 {
+			t.Error("header contains a whitespace only line")
+		}
+		if bytes.ContainsAny(line, "\r\n") {
+			t.Error("header contains a bare line break")
+		}
+		if bytes.Contains(line, []byte("=?UTF-8?")) && len(line) > 76 {
+			t.Errorf("encoded header line has %d bytes, limit is 76", len(line))
 		}
 	}
 }
