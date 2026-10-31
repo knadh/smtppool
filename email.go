@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/big"
 	"mime"
@@ -20,8 +21,10 @@ import (
 	"mime/quotedprintable"
 	"net/mail"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -352,7 +355,7 @@ func (e *Email) Bytes() ([]byte, error) {
 			}
 			if isRelated {
 				for _, a := range htmlAttachments {
-					ap, err := relatedWriter.CreatePart(a.Header)
+					ap, err := relatedWriter.CreatePart(makeAttachmentHeaders(a.Header))
 					if err != nil {
 						return nil, err
 					}
@@ -378,7 +381,7 @@ func (e *Email) Bytes() ([]byte, error) {
 
 	// Create attachment part, if necessary.
 	for _, a := range otherAttachments {
-		ap, err := w.CreatePart(a.Header)
+		ap, err := w.CreatePart(makeAttachmentHeaders(a.Header))
 		if err != nil {
 			return nil, err
 		}
@@ -487,7 +490,7 @@ func (e *Email) Attach(r io.Reader, filename string, c string) (a Attachment, er
 		at.Header.Set(HdrContentType, ContentTypeOctetStream)
 	}
 
-	at.Header.Set(HdrContentDisposition, fmt.Sprintf("attachment;\r\n filename=\"%s\"", filename))
+	at.Header.Set(HdrContentDisposition, mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
 	at.Header.Set(HdrContentID, fmt.Sprintf("<%s>", filename))
 	at.Header.Set(HdrContentTransferEncoding, contentEncBase64)
 	e.Attachments = append(e.Attachments, at)
@@ -758,4 +761,60 @@ func generateMessageID() (string, error) {
 	}
 
 	return fmt.Sprintf("<%d.%d.%d@%s>", t, pid, rint, h), nil
+}
+
+// makeAttachmentHeaders prepares MIME header parameters.
+func makeAttachmentHeaders(header textproto.MIMEHeader) textproto.MIMEHeader {
+	out := maps.Clone(header)
+	for key, values := range header {
+		if !strings.EqualFold(key, HdrContentType) && !strings.EqualFold(key, HdrContentDisposition) {
+			continue
+		}
+
+		out[key] = slices.Clone(values)
+		for i, value := range values {
+			typ, params, err := mime.ParseMediaType(value)
+			// Any unparseable custom headers, keep as-is.
+			if err != nil {
+				continue
+			}
+
+			out[key][i] = formatMimeParams(typ, params)
+		}
+	}
+	return out
+}
+
+// formatMimeParams folds long values (RFC 2231 continuations).
+func formatMimeParams(typ string, params map[string]string) string {
+	val := mime.FormatMediaType(typ, params)
+	if len(val) <= headerLineLength {
+		return val
+	}
+
+	var out strings.Builder
+	out.Grow(len(val) + 128)
+	out.WriteString(typ)
+	for _, key := range slices.Sorted(maps.Keys(params)) {
+		val := params[key]
+		param := mime.FormatMediaType("x", map[string]string{key: val})[3:]
+		if len(param) <= 60 {
+			fmt.Fprintf(&out, ";\r\n %s", param)
+			continue
+		}
+
+		encoded := "utf-8''" + strings.ReplaceAll(url.QueryEscape(val), "+", "%20")
+		for i := 0; len(encoded) > 0; i++ {
+			n := min(60, len(encoded))
+			// Never split a %XX escape between continuation sections.
+			if j := strings.LastIndexByte(encoded[:n], '%'); j >= n-2 && j >= 0 {
+				n = j
+			}
+
+			fmt.Fprintf(&out, ";\r\n %s*%d*=%s", key, i, encoded[:n])
+			encoded = encoded[n:]
+		}
+	}
+
+	return out.String()
 }
